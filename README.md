@@ -1,75 +1,61 @@
 # Event-Driven Image Annotation and Retrieval System
 
-A modular image processing system using Redis pub-sub for asynchronous communication. Images are uploaded, processed (simulated inference + embedding), stored, and searchable by object labels.
+A system that simulates image uploads, object detection, and search using Redis pub-sub. No real images or AI for now — just message passing to demonstrate the architecture.
 
-## Architecture
+## How It Works
 
-The system uses five services communicating via Redis topics:
+1. Script starts → automatically creates 2 fake images (`cat.jpg`, `dog.png`)
+2. Processor "detects" objects in each image (simulated)
+3. Storage saves the results
+4. You search by keyword → system returns matching fake images
 
-| Service | Topic (subscribes) | Topic (publishes) |
-|---------|-------------------|-------------------|
-| Uploader | - | `image.uploaded` |
-| Processor | `image.uploaded` | `inference.done`, `embedding.done` |
-| Storage | `embedding.done` | - |
-| Search Handler | `search.request` | `search.result` |
-| CLI Searcher | `search.result` | `search.request` |
-
-## Message Flow
+## Message Flow (Redis Topics)
 
 ```
-Upload → image.uploaded → Processor (inference + embedding) → embedding.done → Storage
-                                                                          ↓
-CLI Search → search.request → Search Handler (matches labels) → search.result → CLI
+Upload → image.uploaded → Processor → embedding.done → Storage
+                              ↓
+Search → search.request → Search Handler → search.result → You
 ```
-
-## Topics
-
-- `image.uploaded` – new image submitted
-- `inference.done` – object detection complete
-- `embedding.done` – vector created, ready for storage
-- `search.request` – user query submitted
-- `search.result` – search results returned
-
-## Requirements Met
-
-- Redis pub-sub messaging
-- Asynchronous, event-driven flow
-- Document storage (in-memory dictionary, extensible to MongoDB)
-- Vector search simulation (text-based matching, extensible to FAISS)
-- Idempotent message handling
-- Unit test ready
 
 ## Run It
 
 ```bash
-# Terminal 1: Start Redis
+# Terminal 1
 redis-server
 
-# Terminal 2: Run the system
-cd ~/530_image_system
+# Terminal 2
 python3 system.py
 ```
 
-## Commands (at Search> prompt)
+## Try It
+
+When you see `Enter search term`, type either:
+- `cat` → returns the cat image
+- `dog` → returns the dog image
+- `sofa` → returns the cat image (because cat.jpg had 'sofa' as an object)
+- `ball` → returns the dog image
+
+## Example Output
 
 ```
-cat        # finds images with cats
-dog        # finds images with dogs
-sofa       # finds images with sofas
-quit       # exit
-```
+[1] UPLOAD: cat.jpg
+[2] PROCESSOR: Analyzing cat.jpg
+[3] PROCESSOR: Found objects -> ['cat', 'sofa']
+[4] STORAGE: Saved (Total: 1 images)
 
-## Test Output Example
-
-```
-[UPLOAD] cat.jpg -> abc-123
-[INFERENCE] Processing abc-123
-[PROCESSOR] Done -> ['cat', 'sofa']
-[STORAGE] Saved abc-123 | Total: 1
 Search> cat
-[RESULT] "cat" -> ['abc-123']
+RESULT: Found 1 image(s) matching 'cat'
 ```
+
+## What This Demonstrates
+
+- Redis pub-sub messaging
+- Asynchronous event-driven architecture
+- Simulated AI inference and embedding
+- Search by object labels
+- Unit tests included (`pytest test_system.py -v`)
 
 ## Files
 
-- `system.py`
+- `system.py` – everything in one file
+- `test_system.py` – unit tests
