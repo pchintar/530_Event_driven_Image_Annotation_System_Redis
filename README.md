@@ -72,5 +72,4 @@ Search> cat
 
 ## Files
 
-- `system.py` – complete system (uploader, processor, storage, search handler, CLI)
-```
+- `system.py`
