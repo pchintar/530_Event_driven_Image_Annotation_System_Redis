@@ -4,12 +4,45 @@ A complete event-driven system for image annotation, vector indexing, and semant
 
 ## Architecture
 
-The system implements an event-driven pipeline with Redis pub-sub for asynchronous message passing, JSON-based document storage, and FAISS vector indexing for similarity search.
+The system implements an event-driven pipeline where services communicate exclusively through Redis pub-sub topics. Each service owns its data store and reacts to specific events.
 
-Message flow:
-- image.uploaded -> Processor -> embedding.done -> Storage
-- search.request -> Search Handler -> search.result -> CLI
-- annotation.corrected -> Correction Handler -> Update JSON stores and FAISS index
+### Message Flow
+
+```
+┌─────────┐     image.uploaded     ┌───────────┐     embedding.done     ┌─────────┐
+│  CLI    │ ─────────────────────► │ Processor │ ─────────────────────► │ Storage │
+│  User   │                        └───────────┘                        └─────────┘
+└─────────┘                              │                                   │
+     │                                   │                             ┌─────▼─────┐
+     │                                   │                             │   JSON    │
+     │                              ┌────▼────┐                        │  Files    │
+     │                              │  FAISS  │                        └───────────┘
+     │                              │  Index  │                              │
+     │                              └────┬────┘                              │
+     │                                   │                                   │
+     │     search.request                ▼                                   │
+     └────────────────────────────► ┌───────────┐                           │
+                                    │  Search   │ ──────────────────────────┘
+      search.result                 │  Handler  │     query from JSON/FAISS
+     ◄───────────────────────────── └───────────┘
+     
+     annotation.corrected                ▼
+     ─────────────────────────────► ┌───────────┐
+                                    │ Correction│ ───► Update JSON + FAISS
+                                    │  Handler  │
+                                    └───────────┘
+```
+
+### Service Ownership
+
+| Service | Owns | Subscribes To | Publishes To |
+|---------|------|---------------|--------------|
+| Processor | None (stateless) | image.uploaded | embedding.done |
+| Storage | annotations_db.json | embedding.done | none |
+| Vector Index | vector_index.json, faiss_index.bin | embedding.done | none |
+| Search Handler | None | search.request | search.result |
+| Correction Handler | None | annotation.corrected | none |
+| CLI | None | search.result | image.uploaded, search.request, annotation.corrected |
 
 ## Features
 
@@ -47,12 +80,13 @@ python3 system.py
 
 ## Usage
 
-Search commands:
-- `cat` - Keyword search for exact label matches
-- `vector cat` - Vector similarity search using FAISS embeddings
-- `similar img_1004` - Find images visually similar to a given image
-- `correct` - Fix annotation labels with history tracking
-- `quit` - Exit application
+| Command | Description |
+|---------|-------------|
+| `cat` | Keyword search for exact label matches |
+| `vector cat` | Vector similarity search using FAISS embeddings |
+| `similar img_1004` | Find images visually similar to a given image |
+| `correct` | Fix annotation labels with history tracking |
+| `quit` | Exit application |
 
 Replay sample events:
 ```bash
@@ -97,13 +131,15 @@ Tests cover event contract validation, idempotent and malformed message handling
 
 ## Files
 
-- system.py - Main application with all services and FAISS integration
-- vector_search.py - FAISS vector search engine wrapper
-- test_system.py - Unit tests
-- replay.py - Event replay utility
-- sample_events.json - Sample image submissions
-- annotations_db.json - Persistent annotation store
-- vector_index.json - Vector embedding index
-- processed_events.json - Tracked processed event IDs
-- faiss_index.bin - FAISS binary index file
-- requirements.txt - Python dependencies
+| File | Description |
+|------|-------------|
+| system.py | Main application with all services and FAISS integration |
+| vector_search.py | FAISS vector search engine wrapper |
+| test_system.py | Unit tests |
+| replay.py | Event replay utility |
+| sample_events.json | Sample image submissions |
+| annotations_db.json | Persistent annotation store |
+| vector_index.json | Vector embedding index |
+| processed_events.json | Tracked processed event IDs |
+| faiss_index.bin | FAISS binary index file |
+| requirements.txt | Python dependencies |
