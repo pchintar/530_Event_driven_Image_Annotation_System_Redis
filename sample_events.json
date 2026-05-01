@@ -1,0 +1,54 @@
+[
+  {
+    "type": "publish",
+    "topic": "image.submitted",
+    "event_id": "evt_seed_img_1001",
+    "timestamp": "2026-04-22T00:00:00+00:00",
+    "payload": {
+      "image_id": "img_1001",
+      "path": "city_car_person_crosswalk.jpg",
+      "source": "sample_data",
+      "camera": "A",
+      "timestamp": "2026-04-22T00:00:00+00:00"
+    }
+  },
+  {
+    "type": "publish",
+    "topic": "image.submitted",
+    "event_id": "evt_seed_img_1002",
+    "timestamp": "2026-04-22T00:00:01+00:00",
+    "payload": {
+      "image_id": "img_1002",
+      "path": "park_dog_tree_runner.jpg",
+      "source": "sample_data",
+      "camera": "B",
+      "timestamp": "2026-04-22T00:00:01+00:00"
+    }
+  },
+  {
+    "type": "publish",
+    "topic": "image.submitted",
+    "event_id": "evt_seed_img_1003",
+    "timestamp": "2026-04-22T00:00:02+00:00",
+    "payload": {
+      "image_id": "img_1003",
+      "path": "school_bus_building_morning.jpg",
+      "source": "sample_data",
+      "camera": "C",
+      "timestamp": "2026-04-22T00:00:02+00:00"
+    }
+  },
+  {
+    "type": "publish",
+    "topic": "image.submitted",
+    "event_id": "evt_seed_img_1004",
+    "timestamp": "2026-04-22T00:00:03+00:00",
+    "payload": {
+      "image_id": "img_1004",
+      "path": "backyard_cat_tree_evening.jpg",
+      "source": "sample_data",
+      "camera": "A",
+      "timestamp": "2026-04-22T00:00:03+00:00"
+    }
+  }
+]
