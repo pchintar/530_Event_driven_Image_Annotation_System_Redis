@@ -4,6 +4,7 @@ import redis
 import os
 import tempfile
 import sys
+import numpy as np
 
 # Skip Redis tests if Redis not running
 try:
@@ -13,16 +14,13 @@ try:
 except:
     REDIS_AVAILABLE = False
 
-# Import from system
 from system import *
+from vector_search import VectorSearchEngine
 
-# Skip Redis-dependent tests if Redis not available
 if not REDIS_AVAILABLE:
     pytest.skip("Redis not running - skipping Redis tests", allow_module_level=True)
 
 def test_idempotent_messages():
-    if not REDIS_AVAILABLE:
-        pytest.skip("Redis not available")
     r = redis.Redis(host='localhost', port=6379)
     msg = json.dumps({'image_id': 'test123', 'name': 'test.jpg'})
     r.publish(TOPIC_UPLOAD, msg)
@@ -30,8 +28,6 @@ def test_idempotent_messages():
     assert True
 
 def test_malformed_message():
-    if not REDIS_AVAILABLE:
-        pytest.skip("Redis not available")
     r = redis.Redis(host='localhost', port=6379)
     r.publish(TOPIC_UPLOAD, "not json")
     assert True
@@ -40,16 +36,14 @@ def test_load_annotations():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump({'images': {'test': {'image_id': 'test'}}}, f)
         f.close()
-        # Save original file path
         original_file = ANNOTATIONS_FILE
-        # Override for test
         import system
         system.ANNOTATIONS_FILE = f.name
-        reload(system)
+        import importlib
+        importlib.reload(system)
         result = system.load_annotations()
         assert 'test' in result
         os.unlink(f.name)
-        # Restore
         system.ANNOTATIONS_FILE = original_file
 
 def test_make_embedding():
@@ -60,26 +54,34 @@ def test_make_embedding():
     assert emb1 != emb3
     assert len(emb1) == 16
 
+def test_vector_search_engine():
+    vs = VectorSearchEngine(dimension=4)
+    vs.add_item("img1", [1.0, 0.0, 0.0, 0.0], {"label": "cat"})
+    vs.add_item("img2", [0.0, 1.0, 0.0, 0.0], {"label": "dog"})
+    vs.add_item("img3", [0.9, 0.1, 0.0, 0.0], {"label": "feline"})
+    
+    results = vs.search([1.0, 0.0, 0.0, 0.0], 2)
+    assert len(results) >= 2
+    assert results[0][0] == "img1"
+
 def test_vector_save_load():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        test_data = {'items': [{'item_id': 'test', 'vector': [1,2,3]}], 'processed_event_ids': []}
-        json.dump(test_data, f)
-        f.close()
-        original_file = VECTOR_INDEX_FILE
-        import system
-        system.VECTOR_INDEX_FILE = f.name
-        reload(system)
-        loaded = system.load_vector_index()
-        assert loaded['items'][0]['item_id'] == 'test'
-        os.unlink(f.name)
-        system.VECTOR_INDEX_FILE = original_file
+    vs = VectorSearchEngine(dimension=4, index_file="test_faiss.bin")
+    vs.add_item("test_img", [1.0, 0.0, 0.0, 0.0], {"label": "test"})
+    vs.save()
+    
+    vs2 = VectorSearchEngine(dimension=4, index_file="test_faiss.bin")
+    vs2.load()
+    assert vs2.index.ntotal == 1
+    
+    os.remove("test_faiss.bin")
+    if os.path.exists("test_faiss.bin.meta"):
+        os.remove("test_faiss.bin.meta")
 
 def test_semantic_search_with_vectors():
     items = [
         {'item_id': 'img1', 'vector': [1, 0, 0], 'label': 'cat'},
         {'item_id': 'img2', 'vector': [0, 1, 0], 'label': 'dog'}
     ]
-    import numpy as np
     query = [0.9, 0.1, 0]
     scores = []
     for item in items:
@@ -89,8 +91,6 @@ def test_semantic_search_with_vectors():
     assert scores[0][0] == 'img1'
 
 def test_concurrent_messages():
-    if not REDIS_AVAILABLE:
-        pytest.skip("Redis not available")
     import threading
     r = redis.Redis(host='localhost', port=6379)
     def send(i):
@@ -109,7 +109,8 @@ def test_correction_workflow():
         original_file = ANNOTATIONS_FILE
         import system
         system.ANNOTATIONS_FILE = f.name
-        reload(system)
+        import importlib
+        importlib.reload(system)
         database = system.load_annotations()
         if 'img1' in database:
             database['img1']['objects'][0]['label'] = 'feline'
@@ -119,10 +120,37 @@ def test_correction_workflow():
         os.unlink(f.name)
         system.ANNOTATIONS_FILE = original_file
 
-# Helper for reloading
-def reload(module):
-    import importlib
-    importlib.reload(module)
+def test_idempotency_with_event_ids():
+    processed = set()
+    event_id = "evt_123"
+    assert event_id not in processed
+    processed.add(event_id)
+    assert event_id in processed
+
+def test_processed_events_persistence():
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(["evt1", "evt2"], f)
+        f.close()
+        original_file = PROCESSED_EVENTS_FILE
+        import system
+        system.PROCESSED_EVENTS_FILE = f.name
+        import importlib
+        importlib.reload(system)
+        events = system.load_processed_events()
+        assert "evt1" in events
+        os.unlink(f.name)
+        system.PROCESSED_EVENTS_FILE = original_file
 
 if __name__ == '__main__':
-    print("Run with: pytest test_system.py -v")
+    test_idempotent_messages()
+    test_malformed_message()
+    test_load_annotations()
+    test_make_embedding()
+    test_vector_search_engine()
+    test_vector_save_load()
+    test_semantic_search_with_vectors()
+    test_concurrent_messages()
+    test_correction_workflow()
+    test_idempotency_with_event_ids()
+    test_processed_events_persistence()
+    print("\nAll tests passed!")

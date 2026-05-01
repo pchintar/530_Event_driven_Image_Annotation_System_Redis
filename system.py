@@ -5,6 +5,8 @@ import uuid
 import threading
 import os
 import hashlib
+import numpy as np
+from vector_search import VectorSearchEngine
 
 # Config
 REDIS_HOST = 'localhost'
@@ -20,6 +22,7 @@ TOPIC_CORRECTION = 'annotation.corrected'
 # JSON file paths
 ANNOTATIONS_FILE = 'annotations_db.json'
 VECTOR_INDEX_FILE = 'vector_index.json'
+PROCESSED_EVENTS_FILE = 'processed_events.json'
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
@@ -45,13 +48,36 @@ def save_vector_index(index_data):
     with open(VECTOR_INDEX_FILE, 'w') as f:
         json.dump(index_data, f, indent=2)
 
+def load_processed_events():
+    if os.path.exists(PROCESSED_EVENTS_FILE):
+        with open(PROCESSED_EVENTS_FILE, 'r') as f:
+            return set(json.load(f))
+    return set()
+
+def save_processed_events():
+    with open(PROCESSED_EVENTS_FILE, 'w') as f:
+        json.dump(list(processed_events), f)
+
 def make_embedding(text, dim=16):
     """Deterministic embedding generator"""
     hash_val = hashlib.md5(text.encode()).digest()
     return [((hash_val[i % len(hash_val)]) / 128.0) - 1.0 for i in range(dim)]
 
+# Load data
 database = load_annotations()
 vector_index = load_vector_index()
+processed_events = load_processed_events()
+
+# Initialize FAISS vector search
+vector_search = VectorSearchEngine(dimension=16)
+
+# Rebuild FAISS index from vector_index on startup
+for item in vector_index.get('items', []):
+    vector_search.add_item(
+        item['item_id'],
+        item['vector'],
+        {'item_type': item['item_type'], 'label': item.get('label', ''), 'image_id': item['image_id']}
+    )
 
 def upload_image(image_name):
     image_id = str(uuid.uuid4())
@@ -76,6 +102,11 @@ def processor():
     pubsub.subscribe(TOPIC_UPLOAD)
     for msg in pubsub.listen():
         if msg['type'] == 'message':
+            event_id = msg.get('pattern', str(uuid.uuid4()))
+            if event_id in processed_events:
+                print(f"[SKIP] Duplicate event {event_id}")
+                continue
+            
             data = json.loads(msg['data'])
             print(f"\n[2] PROCESSOR: Analyzing {data['name']}")
             time.sleep(0.5)
@@ -121,15 +152,24 @@ def processor():
                         'conf': obj['conf'],
                         'vector': obj['embedding']
                     })
-            if not any(i['item_id'] == f"image::{data['image_id']}" for i in vector_index['items']):
+                    vector_search.add_item(item_id, obj['embedding'], {'item_type': 'object', 'label': obj['label'], 'image_id': data['image_id']})
+            
+            image_item_id = f"image::{data['image_id']}"
+            if not any(i['item_id'] == image_item_id for i in vector_index['items']):
                 vector_index['items'].append({
-                    'item_id': f"image::{data['image_id']}",
+                    'item_id': image_item_id,
                     'item_type': 'image',
                     'image_id': data['image_id'],
                     'label': data['image_id'],
                     'vector': image_embedding
                 })
+                vector_search.add_item(image_item_id, image_embedding, {'item_type': 'image', 'label': data['image_id'], 'image_id': data['image_id']})
+            
             save_vector_index(vector_index)
+            vector_search.save()
+            
+            processed_events.add(event_id)
+            save_processed_events()
             
             r.publish(TOPIC_EMBEDDING, json.dumps({'image_id': data['image_id'], 'objects': [o['label'] for o in objects]}))
             print(f"[3] PROCESSOR: Found objects -> {[o['label'] for o in objects]}")
@@ -139,7 +179,29 @@ def storage():
     pubsub.subscribe(TOPIC_EMBEDDING)
     for msg in pubsub.listen():
         if msg['type'] == 'message':
-            print(f"[4] STORAGE: Updated {ANNOTATIONS_FILE} and {VECTOR_INDEX_FILE}")
+            print(f"[4] STORAGE: Updated {ANNOTATIONS_FILE}, {VECTOR_INDEX_FILE}, and FAISS index")
+
+def search_by_image(image_id: str, k: int = 5):
+    """Find images similar to a given image"""
+    # Get the image's vector from vector_index
+    image_vector = None
+    for item in vector_index.get('items', []):
+        if item['item_id'] == f"image::{image_id}":
+            image_vector = item['vector']
+            break
+    
+    if image_vector is None:
+        print(f"  Image {image_id} has no embedding in vector index")
+        return []
+    
+    # Search using FAISS
+    results = vector_search.search(image_vector, k + 1)
+    similar_images = []
+    for item_id, score, metadata in results:
+        if metadata.get('item_type') == 'image' and metadata.get('image_id') != image_id:
+            similar_images.append((metadata.get('image_id'), score))
+    
+    return similar_images[:k]
 
 def search_handler():
     pubsub = r.pubsub()
@@ -148,17 +210,39 @@ def search_handler():
         if msg['type'] == 'message':
             data = json.loads(msg['data'])
             query = data['query'].lower()
-            matches = []
-            for img_id, img_data in database.items():
-                object_labels = [obj['label'].lower() for obj in img_data.get('objects', [])]
-                if query in ' '.join(object_labels):
-                    matches.append(img_id)
-            r.publish(TOPIC_RESULT, json.dumps({
-                'search_id': data['search_id'], 
-                'query': query, 
-                'matches': len(matches), 
-                'image_ids': matches
-            }))
+            mode = data.get('mode', 'keyword')
+            
+            if mode == 'vector' or data.get('use_vector', False):
+                query_vector = make_embedding(query)
+                results = vector_search.search(query_vector, k=data.get('k', 5))
+                matches = []
+                for item_id, score, metadata in results:
+                    if metadata.get('item_type') == 'image':
+                        matches.append(metadata.get('image_id', item_id))
+                matches = list(dict.fromkeys(matches))
+                print(f"[5] VECTOR SEARCH: '{query}' -> {len(matches)} matches")
+                r.publish(TOPIC_RESULT, json.dumps({
+                    'search_id': data['search_id'],
+                    'query': query,
+                    'matches': len(matches),
+                    'image_ids': matches[:data.get('k', 5)],
+                    'search_type': 'vector'
+                }))
+            else:
+                matches = []
+                for img_id, img_data in database.items():
+                    object_labels = [obj['label'].lower() for obj in img_data.get('objects', [])]
+                    if query in ' '.join(object_labels):
+                        matches.append(img_id)
+                r.publish(TOPIC_RESULT, json.dumps({
+                    'search_id': data['search_id'],
+                    'query': query,
+                    'matches': len(matches),
+                    'image_ids': matches,
+                    'search_type': 'keyword'
+                }))
+                print(f"[5] KEYWORD SEARCH: '{query}' -> {len(matches)} matches")
+
 
 def correction_handler():
     pubsub = r.pubsub()
@@ -184,8 +268,27 @@ def correction_handler():
                             item['label'] = data['new_label']
                             item['vector'] = make_embedding(f"{image_id}_{data['new_label']}")
                             break
+                    
+                    # Update FAISS index - remove old and add new
+                    old_item_id = f"object::{image_id}::{idx}"
+                    new_vector = make_embedding(f"{image_id}_{data['new_label']}")
+                    
+                    # Find and update in FAISS by rebuilding (simpler approach)
+                    # Since FAISS doesn't support direct update, we'll rebuild the index
+                    global vector_search
+                    new_search = VectorSearchEngine(dimension=16)
+                    for item in vector_index['items']:
+                        new_search.add_item(
+                            item['item_id'],
+                            item['vector'],
+                            {'item_type': item['item_type'], 'label': item.get('label', ''), 'image_id': item['image_id']}
+                        )
+                    vector_search = new_search
+                    vector_search.save()
+                    
                     save_vector_index(vector_index)
                     print(f"\n[6] CORRECTED: {image_id} - '{old}' → '{data['new_label']}'\n")
+
 
 def searcher():
     pubsub = r.pubsub()
@@ -196,13 +299,15 @@ def searcher():
             if msg['type'] == 'message':
                 data = json.loads(msg['data'])
                 print(f"\n{'='*50}")
-                print(f"RESULT: Found {data['matches']} image(s) matching '{data['query']}'")
+                print(f"RESULT ({data.get('search_type', 'keyword')}): Found {data['matches']} image(s) matching '{data['query']}'")
                 if data['matches'] > 0:
                     print(f"Image IDs: {data['image_ids']}")
                 print(f"{'='*50}")
-                print("\n[search] Enter term | [correct] fix label | [quit]: ", end='', flush=True)
+                print("\n[search] term | [vector] term | [similar] image_id | [correct] | [quit]: ", end='', flush=True)
     
     threading.Thread(target=listen, daemon=True).start()
+    
+    print("[search] term | [vector] term | [similar] image_id | [correct] | [quit]: ", end='', flush=True)
     
     while True:
         try:
@@ -222,9 +327,34 @@ def searcher():
                     'object_index': idx, 
                     'reviewer': 'cli_user'
                 }))
-                print("\n[search] Enter term | [correct] fix label | [quit]: ", end='', flush=True)
+                print("[search] term | [vector] term | [similar] image_id | [correct] | [quit]: ", end='', flush=True)
+            elif cmd.startswith('vector '):
+                query_text = cmd[7:]
+                r.publish(TOPIC_SEARCH, json.dumps({
+                    'search_id': str(uuid.uuid4()), 
+                    'query': query_text,
+                    'mode': 'vector',
+                    'use_vector': True,
+                    'k': 5
+                }))
+            elif cmd.startswith('similar '):
+                image_id = cmd[8:]
+                results = search_by_image(image_id, 5)
+                print(f"\n{'='*50}")
+                print(f"IMAGES SIMILAR TO {image_id}:")
+                if results:
+                    for img_id, score in results:
+                        print(f"  {img_id} (similarity: {score:.4f})")
+                else:
+                    print(f"  No similar images found for {image_id}")
+                print(f"{'='*50}")
+                print("[search] term | [vector] term | [similar] image_id | [correct] | [quit]: ", end='', flush=True)
             elif cmd:
-                r.publish(TOPIC_SEARCH, json.dumps({'search_id': str(uuid.uuid4()), 'query': cmd}))
+                r.publish(TOPIC_SEARCH, json.dumps({
+                    'search_id': str(uuid.uuid4()), 
+                    'query': cmd,
+                    'mode': 'keyword'
+                }))
         except KeyboardInterrupt:
             break
         except Exception as e:
@@ -246,7 +376,7 @@ def replay_events(event_file='sample_events.json'):
 
 if __name__ == '__main__':
     print("\n" + "="*60)
-    print("EVENT-DRIVEN IMAGE SYSTEM")
+    print("EVENT-DRIVEN IMAGE SYSTEM WITH FAISS VECTOR SEARCH")
     print(f"DB: {len(database)} images | Vectors: {len(vector_index['items'])}")
     print("="*60 + "\n")
     
@@ -265,5 +395,4 @@ if __name__ == '__main__':
     upload_image('dog.png')
     time.sleep(2)
     
-    print("[search] Enter term | [correct] fix label | [quit]: ", end='', flush=True)
     searcher()
