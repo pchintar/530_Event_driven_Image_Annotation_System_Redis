@@ -2,6 +2,8 @@
 
 A complete event-driven system for image annotation, vector indexing, and semantic search using Redis pub-sub architecture with persistent JSON storage and FAISS vector search.
 
+Presentation Video Link: https://drive.google.com/file/d/1dbvmZlQSjQBJSC2FFcE3e2Ga8-pfgYCW/view?usp=sharing
+
 ## Architecture
 
 The system implements an event-driven pipeline where services communicate exclusively through Redis pub-sub topics. Each service runs as a separate process and owns its data store.
