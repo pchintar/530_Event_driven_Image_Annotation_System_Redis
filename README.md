@@ -4,58 +4,55 @@ A complete event-driven system for image annotation, vector indexing, and semant
 
 ## Architecture
 
-The system implements an event-driven pipeline where services communicate exclusively through Redis pub-sub topics. Each service owns its data store and reacts to specific events.
+The system implements an event-driven pipeline where services communicate exclusively through Redis pub-sub topics. Each service runs as a separate process and owns its data store.
 
 ### Message Flow
 
 ```
-┌─────────┐     image.uploaded     ┌───────────┐     embedding.done     ┌─────────┐
-│  CLI    │ ─────────────────────► │ Processor │ ─────────────────────► │ Storage │
-│  User   │                        └───────────┘                        └─────────┘
-└─────────┘                              │                                   │
-     │                                   │                             ┌─────▼─────┐
-     │                                   │                             │   JSON    │
-     │                              ┌────▼────┐                        │  Files    │
-     │                              │  FAISS  │                        └───────────┘
-     │                              │  Index  │                              │
-     │                              └────┬────┘                              │
-     │                                   │                                   │
-     │     search.request                ▼                                   │
-     └────────────────────────────► ┌───────────┐                           │
-                                    │  Search   │ ──────────────────────────┘
-      search.result                 │  Handler  │     query from JSON/FAISS
-     ◄───────────────────────────── └───────────┘
-     
-     annotation.corrected                ▼
-     ─────────────────────────────► ┌───────────┐
-                                    │ Correction│ ───► Update JSON + FAISS
-                                    │  Handler  │
-                                    └───────────┘
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   CLI       │     │  Processor  │     │   Storage   │     │  Embedding  │     │   Search    │
+│  Service    │     │  Service    │     │  Service    │     │  Service    │     │  Service    │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │                   │                   │
+       └───────────────────┴───────────────────┴───────────────────┴───────────────────┘
+                                              │
+                                        ┌─────▼─────┐
+                                        │   Redis   │
+                                        │  Pub-Sub  │
+                                        └───────────┘
+                                              │
+                          ┌───────────────────┼───────────────────┐
+                          │                   │                   │
+                  ┌───────▼───────┐   ┌───────▼───────┐   ┌───────▼───────┐
+                  │ annotations   │   │   FAISS      │   │  processed    │
+                  │ .db.json      │   │   index      │   │  events.json  │
+                  │ (Storage owns)│   │(Embedding owns)│  │ (Processor owns)│
+                  └───────────────┘   └───────────────┘   └───────────────┘
 ```
 
 ### Service Ownership
 
 | Service | Owns | Subscribes To | Publishes To |
 |---------|------|---------------|--------------|
-| Processor | None (stateless) | image.uploaded | embedding.done |
-| Storage | annotations_db.json | embedding.done | none |
-| Vector Index | vector_index.json, faiss_index.bin | embedding.done | none |
-| Search Handler | None | search.request | search.result |
-| Correction Handler | None | annotation.corrected | none |
-| CLI | None | search.result | image.uploaded, search.request, annotation.corrected |
+| Processor | processed_events.json | image.uploaded | embedding.done |
+| Storage | annotations_db.json | embedding.done, annotation.corrected | none |
+| Embedding | vector_index.json, faiss_index.bin | embedding.done | none |
+| Search | none (read-only) | search.request | search.result |
+| CLI | none | search.result | image.uploaded, search.request, annotation.corrected |
 
 ## Features
 
 - Event-driven architecture with Redis pub-sub
+- Separate process-based services with clear ownership boundaries
 - Persistent JSON document storage with nested annotations
 - FAISS vector index for embedding storage and similarity search
 - Deterministic simulated AI inference
-- Event replay from JSON files
 - Annotation correction with history tracking
 - Idempotent message processing with event ID tracking
 - Malformed message rejection
 - Vector similarity search by topic
 - Image similarity search
+- GitHub Actions CI/CD pipeline
 
 ## Document Model Justification
 
@@ -73,50 +70,54 @@ Terminal 1 - Start Redis:
 redis-server
 ```
 
-Terminal 2 - Run application:
+Terminal 2 - Run all services:
 ```bash
-python3 system.py
+./run_all_services.sh
 ```
 
 ## Usage
 
 | Command | Description |
 |---------|-------------|
+| `upload cat.jpg` | Upload an image for processing |
 | `cat` | Keyword search for exact label matches |
 | `vector cat` | Vector similarity search using FAISS embeddings |
 | `similar img_1004` | Find images visually similar to a given image |
 | `correct` | Fix annotation labels with history tracking |
 | `quit` | Exit application |
 
-Replay sample events:
+## Service Commands (for development)
+
+Run services individually for debugging:
 ```bash
-python3 replay.py
+python3 processor_service.py
+python3 storage_service.py
+python3 embedding_service.py
+python3 search_service.py
+python3 cli_service.py
 ```
-
-## Data Models
-
-The annotation document stores image metadata, detected objects with bounding boxes and confidence scores, embeddings, review status, correction notes, and version history.
-
-The vector index stores both image-level and object-level embeddings for semantic search using FAISS (Facebook AI Similarity Search).
 
 ## Sample Output
 
 ```
 ============================================================
-EVENT-DRIVEN IMAGE SYSTEM WITH FAISS VECTOR SEARCH
-DB: 13 images | Vectors: 35
+EVENT-DRIVEN IMAGE SYSTEM - CLI SERVICE
+All services communicate ONLY through Redis
 ============================================================
 
-[1] UPLOAD: cat.jpg
-[2] PROCESSOR: Analyzing cat.jpg
-[3] PROCESSOR: Found objects -> ['cat', 'sofa']
-[4] STORAGE: Updated annotations_db.json, vector_index.json, and FAISS index
+[upload <file>|cat|dog|vector <term>|similar <id>|correct|quit]: upload cat.jpg
+[CLI] Uploaded cat.jpg
+[PROCESSOR] Analyzing cat.jpg
+[PROCESSOR] Found objects -> ['cat', 'sofa']
+[STORAGE] Saved annotation for 4f249447-a8c4-4857-bdd2-79425b7242a0
+[EMBEDDING] Indexed 2 objects + 1 image for 4f249447-a8c4-4857-bdd2-79425b7242a0
 
-[search] term | [vector] term | [similar] image_id | [correct] | [quit]: vector cat
+[upload <file>|cat|dog|vector <term>|similar <id>|correct|quit]: cat
+[CLI] Searching for: cat
 
 ==================================================
-RESULT (vector): Found 2 image(s) matching 'cat'
-Image IDs: ['ddb93803...', 'f6217bda...']
+RESULT: Found 1 image(s)
+Image IDs: ['4f249447-a8c4-4857-bdd2-79425b7242a0']
 ==================================================
 ```
 
@@ -127,19 +128,39 @@ Run unit tests:
 pytest test_system.py -v
 ```
 
-Tests cover event contract validation, idempotent and malformed message handling, embedding generation, FAISS vector search, concurrent processing, correction workflow persistence, and processed event tracking.
+Run integration test:
+```bash
+python3 test_integration.py
+```
+
+Tests cover event contract validation, idempotent and malformed message handling, embedding generation, FAISS vector search, concurrent processing, correction workflow persistence, and Redis communication.
+
+## Continuous Integration
+
+GitHub Actions automatically runs tests on every push to the main branch. The workflow:
+- Starts a Redis container
+- Sets up Python environment
+- Installs dependencies
+- Executes the test suite
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| system.py | Main application with all services and FAISS integration |
-| vector_search.py | FAISS vector search engine wrapper |
+| config.py | Shared Redis topics and file paths |
+| utils.py | Embedding generation and helpers |
+| processor_service.py | Simulated AI detection service |
+| storage_service.py | JSON document store service |
+| embedding_service.py | FAISS vector indexing service |
+| search_service.py | Vector similarity search service |
+| cli_service.py | User interface service |
+| run_all_services.sh | Launch all services |
 | test_system.py | Unit tests |
-| replay.py | Event replay utility |
+| test_integration.py | End-to-end integration test |
 | sample_events.json | Sample image submissions |
 | annotations_db.json | Persistent annotation store |
 | vector_index.json | Vector embedding index |
 | processed_events.json | Tracked processed event IDs |
-| faiss_index.bin | FAISS binary index file |
+| faiss_index.bin | FAISS binary index |
 | requirements.txt | Python dependencies |
+| .github/workflows/test.yml | GitHub Actions CI pipeline |
