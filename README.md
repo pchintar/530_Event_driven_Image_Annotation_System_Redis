@@ -137,11 +137,13 @@ Tests cover event contract validation, idempotent and malformed message handling
 
 ## Continuous Integration
 
-GitHub Actions automatically runs tests on every push to the main branch. The workflow:
-- Starts a Redis container
-- Sets up Python environment
-- Installs dependencies
-- Executes the test suite
+GitHub Actions runs on every push to main branch:
+
+- Starts Redis container and Installs dependencies
+- Launches all five services (CLI, processor, storage, embedding, search)
+- Runs integration tests: upload cat.jpg and dog.png, search by keyword and vector, verify correction workflow
+
+All tests must pass to confirm services communicate exclusively through Redis pub-sub.
 
 ## Files
 
